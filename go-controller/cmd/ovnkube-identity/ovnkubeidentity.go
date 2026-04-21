@@ -21,6 +21,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 	"golang.org/x/sys/unix"
+	"k8s.io/client-go/dynamic"
 
 	certificatesv1 "k8s.io/api/certificates/v1"
 	"k8s.io/client-go/informers"
@@ -44,6 +45,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/scheme"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/csrapprover"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/ovnwebhook"
+	ovntls "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/tls"
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
 )
 
@@ -371,10 +373,20 @@ func runWebhook(ctx context.Context, restCfg *rest.Config) error {
 		webhookMux.Handle("/pod", podHandler)
 	}
 
-	cfg := &tls.Config{
-		NextProtos: []string{"h2"},
-		MinVersion: tls.VersionTLS10,
+	dynamicClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return fmt.Errorf("error creating dynamic client: %w", err)
 	}
+
+	// Fetch TLS configuration from the cluster's API Server to honor the TLS security profile.
+	// This ensures the webhook server complies with cluster-wide TLS policies.
+	cfg, err := ovntls.GetConfigFromAPIServer(ctx, dynamicClient)
+	if err != nil {
+		return fmt.Errorf("failed to get TLS config from API Server: %v", err)
+	}
+
+	// Set NextProtos for HTTP/2 support (required for webhooks)
+	cfg.NextProtos = []string{"h2"}
 
 	certPath := filepath.Join(cliCfg.certDir, "tls.crt")
 	keyPath := filepath.Join(cliCfg.certDir, "tls.key")
